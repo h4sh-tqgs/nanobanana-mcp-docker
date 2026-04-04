@@ -52,9 +52,45 @@ Set `GEMINI_API_KEY` and `HOST_OUTPUT_DIR` in the `env` section:
 }
 ```
 
-## Build
+## Build (Multi-Arch: amd64 + arm64)
 
 ```bash
-docker build -t hasshi7965/nanobanana-mcp .
-docker push hasshi7965/nanobanana-mcp
+# One-time setup for buildx (if needed)
+docker buildx create --name multiarch --use
+docker buildx inspect --bootstrap
+
+# Build and push a multi-arch manifest
+docker buildx build \
+  --platform linux/amd64,linux/arm64 \
+  -t hasshi7965/nanobanana-mcp:latest \
+  --push \
+  .
+```
+
+## Verify published platforms
+
+```bash
+docker buildx imagetools inspect hasshi7965/nanobanana-mcp:latest
+```
+
+You should see both `linux/amd64` and `linux/arm64` in the manifest.
+
+## Optional local platform test
+
+```bash
+# Run arm64 image explicitly
+docker run --rm --platform linux/arm64 -i hasshi7965/nanobanana-mcp:latest
+
+# Run amd64 image explicitly
+docker run --rm --platform linux/amd64 -i hasshi7965/nanobanana-mcp:latest
+```
+
+## Shortcut script
+
+```bash
+# Publish latest
+./build-multiarch.sh
+
+# Publish a version tag
+./build-multiarch.sh v0.1.0
 ```
