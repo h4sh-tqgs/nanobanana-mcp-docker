@@ -13,18 +13,20 @@ Users can run hasshi7965/nanobanana-mcp:latest on both amd64 and arm64 hosts wit
 - Created and pushed branch fix/multi-arch-image with the above changes.
 - Ran multi-arch build locally; build succeeded for linux/amd64 and linux/arm64.
 - Captured build logs in logs/build-multiarch.log.
+- Logged in to Docker Hub with write permissions.
+- Re-ran build-multiarch script and pushed multi-arch latest manifest successfully.
+- Verified published manifest now includes linux/amd64 and linux/arm64 entries.
 
 # Next
-- Authenticate to Docker Hub (docker login) with permission to hasshi7965/nanobanana-mcp.
-- Re-run ./build-multiarch.sh to push manifest list.
-- Verify with docker buildx imagetools inspect and test docker run on arm64 host.
+- Open/merge PR fix/multi-arch-image into main.
+- Optionally publish versioned tag with ./build-multiarch.sh vX.Y.Z.
 
 # Waiting
-Docker push failed with insufficient_scope authorization; waiting for Docker Hub credentials/permissions.
+none
 
 # Risks
 - Build may fail on one architecture due to upstream dependency wheel/source availability.
-- Docker Hub push requires authenticated session and repo write scope.
+- Docker login token was handled in shell history; rotate token if needed for security hygiene.
 
 # Resume instruction
 Continue by editing README to replace single-arch build/push commands with docker buildx multi-arch commands for linux/amd64 and linux/arm64. Add a small helper script to standardize tag handling and push latest + version tags as a manifest list. After edits, verify with git diff and provide exact republish and runtime verification commands.
