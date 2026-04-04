@@ -26,7 +26,7 @@ The upstream nanobanana MCP server generates images inside the Docker container.
       "command": "docker",
       "args": [
         "run", "--rm", "-i",
-        "-v", "c:/tmp:/output",
+        "-v", "${HOST_OUTPUT_DIR}:/output",
         "-e", "GEMINI_API_KEY",
         "-e", "LOG_LEVEL=ERROR",
         "-e", "IMAGE_OUTPUT_DIR=/output",
