@@ -1,0 +1,64 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  nanobanana MCP server on AWS Lambda (container image + Function URL).
+  Exposes Streamable HTTP MCP at `<FunctionUrl>mcp` protected by a bearer token.
+
+Parameters:
+  GeminiApiKey:
+    Type: String
+    NoEcho: true
+    Description: Google Gemini API key (passed to the upstream server as GEMINI_API_KEY).
+  McpAuthToken:
+    Type: String
+    NoEcho: true
+    Description: >
+      Shared bearer token. Clients must send `Authorization: Bearer <this>`.
+      Generate with e.g. `openssl rand -hex 32`.
+  LogLevel:
+    Type: String
+    Default: INFO
+    AllowedValues: [DEBUG, INFO, WARNING, ERROR]
+  MemorySize:
+    Type: Number
+    Default: 2048
+    MinValue: 512
+    MaxValue: 10240
+  TimeoutSeconds:
+    Type: Number
+    Default: 180
+    MinValue: 30
+    MaxValue: 900
+
+Resources:
+  NanoBananaMcpFunction:
+    Type: AWS::Serverless::Function
+    Metadata:
+      DockerTag: latest
+      DockerContext: ../lambda
+      Dockerfile: Dockerfile
+    Properties:
+      PackageType: Image
+      MemorySize: !Ref MemorySize
+      Timeout: !Ref TimeoutSeconds
+      Architectures: [x86_64]
+      Environment:
+        Variables:
+          GEMINI_API_KEY: !Ref GeminiApiKey
+          MCP_AUTH_TOKEN: !Ref McpAuthToken
+          LOG_LEVEL: !Ref LogLevel
+          IMAGE_OUTPUT_DIR: /tmp/nanobanana
+      FunctionUrlConfig:
+        AuthType: NONE
+        InvokeMode: BUFFERED
+        Cors:
+          AllowOrigins: ["*"]
+          AllowMethods: ["*"]
+          AllowHeaders: ["*"]
+
+Outputs:
+  FunctionUrl:
+    Description: Public HTTPS endpoint. Append `mcp` (e.g. `https://xxx.lambda-url.../mcp`).
+    Value: !GetAtt NanoBananaMcpFunctionUrl.FunctionUrl
+  FunctionName:
+    Value: !Ref NanoBananaMcpFunction

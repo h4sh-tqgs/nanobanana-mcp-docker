@@ -1,32 +1,47 @@
 # Current task
-Enable multi-arch Docker image (amd64 + arm64)
+Mirror nanobanana MCP implementation to AWS Lambda
 
 # Goal
-Users can run hasshi7965/nanobanana-mcp:latest on both amd64 and arm64 hosts without exec format errors.
+Users can use nanobanana-mcp as a remote MCP server hosted on AWS Lambda, with no
+per-machine Docker/stdio setup. Claude Code connects via `"type": "http"` + URL +
+bearer token. Existing Docker/stdio setup is preserved (not replaced).
 
 # Done
-- Inspected Dockerfile, README, and entrypoint.
-- Identified root cause: image currently published as single-arch.
-- Created .agent directory for resumable workflow.
-- Updated README with docker buildx multi-arch build/push and verification steps.
-- Added executable build-multiarch.sh helper script for amd64/arm64 publish.
-- Created and pushed branch fix/multi-arch-image with the above changes.
-- Ran multi-arch build locally; build succeeded for linux/amd64 and linux/arm64.
-- Captured build logs in logs/build-multiarch.log.
-- Logged in to Docker Hub with write permissions.
-- Re-ran build-multiarch script and pushed multi-arch latest manifest successfully.
-- Verified published manifest now includes linux/amd64 and linux/arm64 entries.
+- Investigated upstream nanobanana-mcp-server: confirmed FASTMCP_TRANSPORT=http supported.
+- Confirmed FastMCP 3.2 http_app(stateless_http=True, json_response=True) returns a
+  Starlette ASGI app suitable for Lambda (no SSE streaming required).
+- Confirmed images are returned as inline MCP content blocks so S3 is not required;
+  use /tmp/nanobanana as scratch IMAGE_OUTPUT_DIR on Lambda.
+- Created branch feat/aws-lambda-deployment.
 
 # Next
-- Open/merge PR fix/multi-arch-image into main.
-- Optionally publish versioned tag with ./build-multiarch.sh vX.Y.Z.
+- Write lambda/app.py (Mangum + Starlette app + bearer-auth middleware).
+- Write lambda/Dockerfile (public.ecr.aws/lambda/python:3.12 base, installs
+  nanobanana-mcp-server + mangum).
+- Write infra/template.yaml (AWS SAM: Lambda container image + Function URL +
+  memory/timeout tuned for image generation).
+- Add lambda/README.md with deploy + client-config snippet.
+- Verify by running `sam build` locally once SAM CLI present (user may deploy).
 
 # Waiting
-none
+User may need to:
+  1. have AWS credentials + SAM CLI installed
+  2. choose bearer token value (generated during deploy)
+  3. set GEMINI_API_KEY as Lambda env var (do not bake into image)
+Non-blocking - we can ship all infra code without AWS access.
 
 # Risks
-- Build may fail on one architecture due to upstream dependency wheel/source availability.
-- Docker login token was handled in shell history; rotate token if needed for security hygiene.
+- Lambda cold start ~2-5s for container image; first MCP call will be slow.
+- Gemini image generation can take 30-90s; Lambda timeout must be >=120s.
+- Bearer token via env var is the only practical MCP client auth; document that
+  the Function URL is otherwise public.
+- Stateless HTTP MCP: every request is a fresh session, so any tool that relies
+  on server-side session state will break. nanobanana tools are single-shot so
+  this is fine.
 
 # Resume instruction
-Continue by editing README to replace single-arch build/push commands with docker buildx multi-arch commands for linux/amd64 and linux/arm64. Add a small helper script to standardize tag handling and push latest + version tags as a manifest list. After edits, verify with git diff and provide exact republish and runtime verification commands.
+Continue by implementing lambda/ and infra/ files per the Next list. Keep the
+existing Docker/stdio path intact. If user reports issues with Mangum + FastMCP
+ASGI streaming, fall back to non-stream json_response=True (already the plan).
+After implementation, commit per file-group milestone and push to
+feat/aws-lambda-deployment.

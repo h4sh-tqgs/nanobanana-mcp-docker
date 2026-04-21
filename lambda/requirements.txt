@@ -1,0 +1,2 @@
+nanobanana-mcp-server
+mangum>=0.17
