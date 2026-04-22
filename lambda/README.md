@@ -21,12 +21,21 @@ Key differences from the Docker/stdio image:
 | Concern | Docker image | Lambda |
 |---|---|---|
 | Transport | stdio (spawned by Claude) | Streamable HTTP (stateless, JSON mode) |
-| Output files | `/output` bind-mounted to host | `/tmp/nanobanana` on Lambda, returned inline as MCP image blocks |
+| Output files | `/output` bind-mounted to host | `/tmp/nanobanana` on Lambda, also uploaded to S3 with presigned `download_url` |
 | Auth | none (local spawn) | bearer token (`MCP_AUTH_TOKEN`) |
 | Startup | `docker run -i ...` | cold start ~2-5s, then warm |
 
-Because images come back inline as MCP content blocks, there is no host-copy step
-to inject into `instructions`; Claude Code receives the image directly.
+Images are returned inline as MCP content blocks **and** uploaded to an S3
+bucket created by the SAM stack. The wrapper injects an `instructions` block
+telling the calling LLM to `curl` each image's `download_url` into the user's
+working directory. The S3 bucket has a lifecycle rule that **auto-deletes
+generated images after `ImageRetentionDays` days** (default 7) — clients should
+download promptly. Presigned URLs themselves expire after
+`PresignTtlSeconds` seconds (default 3600).
+
+Why S3? Lambda's `/tmp` is per-instance; the file written by `generate_image`
+on instance A is not visible to a follow-up request that lands on instance B.
+S3 is the only reliable cross-invocation store.
 
 ## Prerequisites
 
@@ -63,7 +72,9 @@ sam build
 sam deploy --guided \
   --parameter-overrides \
     GeminiApiKey=YOUR_GEMINI_KEY \
-    McpAuthToken=$(openssl rand -hex 32)
+    McpAuthToken=$(openssl rand -hex 32) \
+    PresignTtlSeconds=3600 \
+    ImageRetentionDays=7
 ```
 
 On success the stack prints `FunctionUrl`, e.g.
@@ -136,6 +147,9 @@ Then point a client at `http://127.0.0.1:3000/mcp` with the same bearer.
   idle is ~2-5 s before the actual tool call runs.
 - **Concurrency**: no reserved concurrency is set. If you want to cap spend add
   `ReservedConcurrentExecutions` in the template.
+- **S3**: each generated image is stored for `ImageRetentionDays` (default 7);
+  S3 standard storage cost is negligible at this volume but the bucket name is
+  exported as `ImageBucketName` in the stack outputs if you need to inspect it.
 
 ## Teardown
 

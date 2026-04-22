@@ -29,8 +29,45 @@ Parameters:
     Default: 180
     MinValue: 30
     MaxValue: 900
+  PresignTtlSeconds:
+    Type: Number
+    Default: 3600
+    MinValue: 60
+    MaxValue: 604800
+    Description: TTL of S3 presigned download URLs returned to clients (default 1h).
+  ImageRetentionDays:
+    Type: Number
+    Default: 7
+    MinValue: 1
+    MaxValue: 365
+    Description: Days before generated images are auto-deleted from S3 (lifecycle).
 
 Resources:
+  ImageBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Retain
+    Properties:
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      LifecycleConfiguration:
+        Rules:
+          - Id: ExpireGeneratedImages
+            Status: Enabled
+            Prefix: images/
+            ExpirationInDays: !Ref ImageRetentionDays
+          - Id: AbortIncompleteMultipartUploads
+            Status: Enabled
+            AbortIncompleteMultipartUpload:
+              DaysAfterInitiation: 1
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+
   NanoBananaMcpFunction:
     Type: AWS::Serverless::Function
     Metadata:
@@ -48,6 +85,17 @@ Resources:
           MCP_AUTH_TOKEN: !Ref McpAuthToken
           LOG_LEVEL: !Ref LogLevel
           IMAGE_OUTPUT_DIR: /tmp/nanobanana
+          IMAGE_S3_BUCKET: !Ref ImageBucket
+          IMAGE_S3_PREFIX: images/
+          IMAGE_PRESIGN_TTL_SECONDS: !Ref PresignTtlSeconds
+          IMAGE_RETENTION_DAYS: !Ref ImageRetentionDays
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action:
+                - s3:PutObject
+                - s3:GetObject
+              Resource: !Sub "${ImageBucket.Arn}/images/*"
       FunctionUrlConfig:
         AuthType: NONE
         InvokeMode: BUFFERED
@@ -62,3 +110,6 @@ Outputs:
     Value: !GetAtt NanoBananaMcpFunctionUrl.FunctionUrl
   FunctionName:
     Value: !Ref NanoBananaMcpFunction
+  ImageBucketName:
+    Description: S3 bucket where generated images are uploaded for client download.
+    Value: !Ref ImageBucket
