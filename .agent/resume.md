@@ -1,47 +1,55 @@
 # Current task
-Mirror nanobanana MCP implementation to AWS Lambda
+Mirror nanobanana MCP implementation to AWS Lambda (DONE)
 
 # Goal
 Users can use nanobanana-mcp as a remote MCP server hosted on AWS Lambda, with no
 per-machine Docker/stdio setup. Claude Code connects via `"type": "http"` + URL +
-bearer token. Existing Docker/stdio setup is preserved (not replaced).
+bearer token. Existing Docker/stdio setup is preserved.
 
 # Done
-- Investigated upstream nanobanana-mcp-server: confirmed FASTMCP_TRANSPORT=http supported.
-- Confirmed FastMCP 3.2 http_app(stateless_http=True, json_response=True) returns a
-  Starlette ASGI app suitable for Lambda (no SSE streaming required).
-- Confirmed images are returned as inline MCP content blocks so S3 is not required;
-  use /tmp/nanobanana as scratch IMAGE_OUTPUT_DIR on Lambda.
-- Created branch feat/aws-lambda-deployment.
+- Investigated upstream nanobanana-mcp-server: FASTMCP_TRANSPORT=http supported.
+- Confirmed FastMCP 3.2 http_app(stateless_http=True, json_response=True) works for
+  Lambda (no SSE streaming needed; single JSON request/response).
+- Confirmed images come back as inline MCP content blocks (no S3 needed).
+- lambda/app.py (Mangum + Starlette bearer-auth middleware, hmac.compare_digest).
+- lambda/Dockerfile (public.ecr.aws/lambda/python:3.12 base).
+- infra/template.yaml (SAM: container function + Function URL NONE-auth + CORS *).
+- lambda/README.md with deploy + client-config + WSL2 DOCKER_CONFIG note.
+- Verified locally via Lambda RIE: tools/list = 200, bad-auth = 401.
+- Created IAM user `nanobanana-deployer` with AdministratorAccess, switched from
+  root keys to IAM user keys.
+- Worked around WSL2 Docker Desktop credsStore issue by pointing
+  DOCKER_CONFIG=~/.docker-sam (empty config) for SAM builds/deploys.
+- `sam build` + `sam deploy --guided` succeeded on ap-northeast-1.
+- Live Function URL returns full tools/list over HTTPS with bearer auth.
 
 # Next
-- Write lambda/app.py (Mangum + Starlette app + bearer-auth middleware).
-- Write lambda/Dockerfile (public.ecr.aws/lambda/python:3.12 base, installs
-  nanobanana-mcp-server + mangum).
-- Write infra/template.yaml (AWS SAM: Lambda container image + Function URL +
-  memory/timeout tuned for image generation).
-- Add lambda/README.md with deploy + client-config snippet.
-- Verify by running `sam build` locally once SAM CLI present (user may deploy).
+- User pastes FunctionUrl + bearer token into their `.mcp.json` under
+  `{"type":"http","url":".../mcp","headers":{"Authorization":"Bearer ..."}}`.
+- Optional: revoke root access keys in AWS console (local backup already
+  cleaned up per instructions).
+- Optional: open PR from feat/aws-lambda-deployment into main once user confirms
+  Claude Code successfully consumes the remote server.
+- Optional cost guardrail: add ReservedConcurrentExecutions or a CloudWatch
+  billing alarm if the user wants hard spend caps.
 
 # Waiting
-User may need to:
-  1. have AWS credentials + SAM CLI installed
-  2. choose bearer token value (generated during deploy)
-  3. set GEMINI_API_KEY as Lambda env var (do not bake into image)
-Non-blocking - we can ship all infra code without AWS access.
+none
 
 # Risks
-- Lambda cold start ~2-5s for container image; first MCP call will be slow.
-- Gemini image generation can take 30-90s; Lambda timeout must be >=120s.
-- Bearer token via env var is the only practical MCP client auth; document that
-  the Function URL is otherwise public.
-- Stateless HTTP MCP: every request is a fresh session, so any tool that relies
-  on server-side session state will break. nanobanana tools are single-shot so
-  this is fine.
+- Bearer token is the only auth in front of the Function URL. If the token
+  leaks, anyone can invoke the Lambda and burn Gemini API quota. Rotate by
+  redeploying with a new McpAuthToken value.
+- Root access keys should be disabled in the AWS console (manual step, CLI
+  cannot touch own root keys).
+- Lambda cold start for container images is ~2-5s; Gemini Pro 4K gen can
+  approach 90s. Timeout set to 180s in template.yaml — raise if users see
+  timeouts.
 
 # Resume instruction
-Continue by implementing lambda/ and infra/ files per the Next list. Keep the
-existing Docker/stdio path intact. If user reports issues with Mangum + FastMCP
-ASGI streaming, fall back to non-stream json_response=True (already the plan).
-After implementation, commit per file-group milestone and push to
-feat/aws-lambda-deployment.
+Implementation and deployment are complete. If the user comes back for
+changes: edit lambda/app.py or infra/template.yaml, then from the infra/
+directory run `DOCKER_CONFIG=~/.docker-sam sam build && DOCKER_CONFIG=~/.docker-sam sam deploy`.
+samconfig.toml (gitignored) already has stack name / region / parameters so
+subsequent deploys don't need --guided. For teardown run
+`DOCKER_CONFIG=~/.docker-sam sam delete` from infra/.
