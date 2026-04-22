@@ -218,10 +218,17 @@ class S3AugmentMiddleware(BaseHTTPMiddleware):
             result = item.get("result")
             if not isinstance(result, dict):
                 continue
-            content = result.get("content")
-            if not isinstance(content, list):
-                continue
-            for block in content:
+
+            structured = result.get("structuredContent")
+            structured_images = (
+                structured.get("images") if isinstance(structured, dict) else None
+            )
+            if isinstance(structured_images, list) and structured_images:
+                if self._augment_images(structured_images):
+                    mutated_any = True
+                    self._sync_structured_into_text_blocks(result, structured)
+
+            for block in result.get("content") or []:
                 if not isinstance(block, dict) or block.get("type") != "text":
                     continue
                 text = block.get("text")
@@ -236,29 +243,48 @@ class S3AugmentMiddleware(BaseHTTPMiddleware):
                 images = inner.get("images")
                 if not isinstance(images, list) or not images:
                     continue
-
-                changed = False
-                for img in images:
-                    if not isinstance(img, dict) or img.get("download_url"):
-                        continue
-                    full_path = img.get("full_path")
-                    if not isinstance(full_path, str):
-                        continue
-                    upload = _upload_and_presign(full_path)
-                    if upload:
-                        url, safe_name = upload
-                        img["download_url"] = url
-                        img["download_url_expires_in_seconds"] = PRESIGN_TTL
-                        img["safe_filename"] = safe_name
-                        changed = True
-
-                if changed:
+                if self._augment_images(images):
                     block["text"] = json.dumps(inner, ensure_ascii=False)
-                    structured = result.get("structuredContent")
-                    if isinstance(structured, dict):
-                        structured["images"] = inner.get("images")
                     mutated_any = True
         return mutated_any
+
+    @staticmethod
+    def _augment_images(images: list) -> bool:
+        changed = False
+        for img in images:
+            if not isinstance(img, dict) or img.get("download_url"):
+                continue
+            full_path = img.get("full_path")
+            if not isinstance(full_path, str):
+                continue
+            upload = _upload_and_presign(full_path)
+            if not upload:
+                continue
+            url, safe_name = upload
+            img["download_url"] = url
+            img["download_url_expires_in_seconds"] = PRESIGN_TTL
+            img["safe_filename"] = safe_name
+            changed = True
+        return changed
+
+    @staticmethod
+    def _sync_structured_into_text_blocks(result: dict, structured: dict) -> None:
+        """If a text content block embeds the same JSON, refresh it in place so
+        clients that parse `content[].text` see the new download_url too."""
+        for block in result.get("content") or []:
+            if not isinstance(block, dict) or block.get("type") != "text":
+                continue
+            text = block.get("text")
+            if not isinstance(text, str):
+                continue
+            try:
+                inner = json.loads(text)
+            except Exception:
+                continue
+            if not isinstance(inner, dict) or "images" not in inner:
+                continue
+            inner["images"] = structured.get("images")
+            block["text"] = json.dumps(inner, ensure_ascii=False)
 
 
 def _inject_download_instructions(wrapper) -> None:
