@@ -35,6 +35,23 @@ to inject into `instructions`; Claude Code receives the image directly.
 - Docker (used by `sam build` to produce the image)
 - `GEMINI_API_KEY`
 
+## WSL2 + Docker Desktop note
+
+On WSL2 with Docker Desktop, `~/.docker/config.json` often carries
+`"credsStore": "desktop.exe"` which breaks `sam build`/`sam deploy` (they
+invoke the Python Docker SDK from inside WSL, which can't launch the Windows
+helper). Work around it by pointing SAM at an isolated, empty Docker config
+directory — do this once per shell:
+
+```bash
+mkdir -p ~/.docker-sam
+echo '{}' > ~/.docker-sam/config.json
+export DOCKER_CONFIG=~/.docker-sam   # or prefix every sam command
+```
+
+The snippets below assume `DOCKER_CONFIG` is exported. Drop the line on
+Linux/macOS without Docker Desktop.
+
 ## Deploy
 
 ```bash
