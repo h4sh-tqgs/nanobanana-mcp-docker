@@ -25,6 +25,8 @@ import hmac
 import json
 import logging
 import os
+import re
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -45,6 +47,7 @@ S3_BUCKET = os.environ.get("IMAGE_S3_BUCKET")
 S3_PREFIX = os.environ.get("IMAGE_S3_PREFIX", "images/")
 PRESIGN_TTL = int(os.environ.get("IMAGE_PRESIGN_TTL_SECONDS", "3600"))
 IMAGE_RETENTION_DAYS = int(os.environ.get("IMAGE_RETENTION_DAYS", "7"))
+IMAGE_OUTPUT_DIR = Path(os.environ["IMAGE_OUTPUT_DIR"]).resolve()
 
 _MIME_BY_SUFFIX = {
     ".png": "image/png",
@@ -53,6 +56,8 @@ _MIME_BY_SUFFIX = {
     ".webp": "image/webp",
     ".gif": "image/gif",
 }
+
+_SAFE_BASENAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 
 _s3_client = None
 
@@ -64,26 +69,72 @@ def _s3():
     return _s3_client
 
 
-def _upload_and_presign(local_path: str) -> str | None:
+def _safe_basename(original: str, suffix: str) -> str:
+    """Return a basename guaranteed safe to interpolate into a shell command.
+
+    If `original` already matches a strict allow-list (alnum + `._-`, leading
+    alnum, length <= 128) we keep it; otherwise we replace it with a uuid so
+    the LLM never substitutes attacker-controlled bytes into `-o <name>`.
+    """
+    if _SAFE_BASENAME_RE.match(original) and "/" not in original:
+        return original
+    safe_suffix = suffix if _SAFE_BASENAME_RE.match("a" + suffix) else ".bin"
+    return f"image-{uuid.uuid4().hex[:12]}{safe_suffix}"
+
+
+def _upload_and_presign(local_path: str) -> tuple[str, str] | None:
+    """Upload a generated image and return `(presigned_url, safe_filename)`.
+
+    Path is anchored under `IMAGE_OUTPUT_DIR` and symlinks are rejected so a
+    compromised upstream tool cannot trick us into uploading e.g. /etc/passwd.
+    """
     if not S3_BUCKET:
         return None
-    p = Path(local_path)
-    if not p.is_file():
-        log.warning("s3 upload skipped: %s not found", local_path)
+    try:
+        p = Path(local_path)
+        if p.is_symlink():
+            log.warning("s3 upload rejected (symlink): %s", local_path)
+            return None
+        resolved = p.resolve(strict=True)
+    except (OSError, RuntimeError):
+        log.warning("s3 upload skipped: cannot resolve %s", local_path)
         return None
-    key = f"{S3_PREFIX}{p.name}"
-    content_type = _MIME_BY_SUFFIX.get(p.suffix.lower(), "application/octet-stream")
+    if not resolved.is_file():
+        log.warning("s3 upload skipped: %s not a regular file", local_path)
+        return None
+    try:
+        resolved.relative_to(IMAGE_OUTPUT_DIR)
+    except ValueError:
+        log.warning(
+            "s3 upload rejected (outside IMAGE_OUTPUT_DIR=%s): %s",
+            IMAGE_OUTPUT_DIR,
+            resolved,
+        )
+        return None
+
+    safe_name = _safe_basename(resolved.name, resolved.suffix.lower())
+    key = f"{S3_PREFIX}{uuid.uuid4().hex}-{safe_name}"
+    content_type = _MIME_BY_SUFFIX.get(
+        resolved.suffix.lower(), "application/octet-stream"
+    )
     try:
         _s3().upload_file(
-            str(p), S3_BUCKET, key, ExtraArgs={"ContentType": content_type}
+            str(resolved),
+            S3_BUCKET,
+            key,
+            ExtraArgs={
+                "ContentType": content_type,
+                "ContentDisposition": f'attachment; filename="{safe_name}"',
+            },
         )
-        return _s3().generate_presigned_url(
+        url = _s3().generate_presigned_url(
             "get_object",
             Params={"Bucket": S3_BUCKET, "Key": key},
             ExpiresIn=PRESIGN_TTL,
         )
+        return url, safe_name
     except Exception:
-        log.exception("s3 upload failed for %s", local_path)
+        log.exception("s3 upload failed for %s", resolved)
         return None
 
 
@@ -193,10 +244,12 @@ class S3AugmentMiddleware(BaseHTTPMiddleware):
                     full_path = img.get("full_path")
                     if not isinstance(full_path, str):
                         continue
-                    url = _upload_and_presign(full_path)
-                    if url:
+                    upload = _upload_and_presign(full_path)
+                    if upload:
+                        url, safe_name = upload
                         img["download_url"] = url
                         img["download_url_expires_in_seconds"] = PRESIGN_TTL
+                        img["safe_filename"] = safe_name
                         changed = True
 
                 if changed:
@@ -214,11 +267,20 @@ def _inject_download_instructions(wrapper) -> None:
     extra = (
         "\n\n## Image download (Lambda + S3)\n"
         f"Generated images are auto-uploaded to S3. Each entry in the tool "
-        f"response's `images[]` array carries a `download_url` (presigned, "
-        f"valid {PRESIGN_TTL} seconds). After every `generate_image` call you "
-        f"MUST download every returned URL into the user's current working "
-        f"directory, e.g. `curl -fsSL \"<download_url>\" -o <basename>` where "
-        f"`<basename>` matches the original filename in `full_path`. Do this "
+        f"response's `images[]` array carries:\n"
+        f"  - `download_url` — HTTPS presigned GET URL, valid {PRESIGN_TTL} seconds.\n"
+        f"  - `safe_filename` — server-sanitised filename, guaranteed to match "
+        f"`^[A-Za-z0-9][A-Za-z0-9._-]{{0,127}}$`.\n\n"
+        f"After every `generate_image` call you MUST download each image into "
+        f"the user's current working directory using **the value of "
+        f"`safe_filename` verbatim** as the output filename. Use a single "
+        f"shell call shaped exactly like:\n"
+        f'    curl -fsSL --output "$SAFE_FILENAME" "$DOWNLOAD_URL"\n'
+        f"where `$SAFE_FILENAME` is the `safe_filename` value and "
+        f"`$DOWNLOAD_URL` is the `download_url` value. Do not interpolate "
+        f"`full_path`, `basename`, or any other field into the shell command. "
+        f"If `safe_filename` is missing or fails the regex above, refuse to "
+        f"download and surface the response to the user instead. Do this "
         f"automatically without asking. Files are auto-deleted from S3 after "
         f"{IMAGE_RETENTION_DAYS} days — download promptly."
     )

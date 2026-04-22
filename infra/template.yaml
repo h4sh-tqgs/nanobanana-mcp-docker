@@ -33,8 +33,11 @@ Parameters:
     Type: Number
     Default: 3600
     MinValue: 60
-    MaxValue: 604800
-    Description: TTL of S3 presigned download URLs returned to clients (default 1h).
+    MaxValue: 86400
+    Description: >
+      TTL of S3 presigned download URLs returned to clients (default 1h, max 24h).
+      Capped at 24h because presigned URLs bypass IAM revocation; longer TTLs
+      outlive credential rotations.
   ImageRetentionDays:
     Type: Number
     Default: 7
@@ -67,6 +70,24 @@ Resources:
         ServerSideEncryptionConfiguration:
           - ServerSideEncryptionByDefault:
               SSEAlgorithm: AES256
+
+  ImageBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref ImageBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: "*"
+            Action: "s3:*"
+            Resource:
+              - !GetAtt ImageBucket.Arn
+              - !Sub "${ImageBucket.Arn}/*"
+            Condition:
+              Bool:
+                aws:SecureTransport: "false"
 
   NanoBananaMcpFunction:
     Type: AWS::Serverless::Function
@@ -101,8 +122,13 @@ Resources:
         InvokeMode: BUFFERED
         Cors:
           AllowOrigins: ["*"]
-          AllowMethods: ["*"]
-          AllowHeaders: ["*"]
+          AllowMethods: ["POST", "GET", "OPTIONS"]
+          AllowHeaders:
+            - authorization
+            - content-type
+            - accept
+            - mcp-session-id
+            - mcp-protocol-version
 
 Outputs:
   FunctionUrl:

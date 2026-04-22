@@ -87,6 +87,18 @@ cd infra
 sam build && sam deploy
 ```
 
+One-time post-deploy: cap CloudWatch log retention (the Lambda-managed log
+group defaults to never expire). Adjust days to taste.
+
+```bash
+aws logs put-retention-policy \
+  --log-group-name "/aws/lambda/$(aws cloudformation describe-stacks \
+    --stack-name nanobanana-mcp \
+    --query 'Stacks[0].Outputs[?OutputKey==`FunctionName`].OutputValue' \
+    --output text)" \
+  --retention-in-days 14
+```
+
 ## Client config (Claude Code)
 
 `.mcp.json`:
