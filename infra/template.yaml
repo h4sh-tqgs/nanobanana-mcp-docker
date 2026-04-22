@@ -64,6 +64,7 @@ Resources:
             ExpirationInDays: !Ref ImageRetentionDays
           - Id: AbortIncompleteMultipartUploads
             Status: Enabled
+            Prefix: ""
             AbortIncompleteMultipartUpload:
               DaysAfterInitiation: 1
       BucketEncryption:
@@ -108,8 +109,8 @@ Resources:
           IMAGE_OUTPUT_DIR: /tmp/nanobanana
           IMAGE_S3_BUCKET: !Ref ImageBucket
           IMAGE_S3_PREFIX: images/
-          IMAGE_PRESIGN_TTL_SECONDS: !Ref PresignTtlSeconds
-          IMAGE_RETENTION_DAYS: !Ref ImageRetentionDays
+          IMAGE_PRESIGN_TTL_SECONDS: !Sub "${PresignTtlSeconds}"
+          IMAGE_RETENTION_DAYS: !Sub "${ImageRetentionDays}"
       Policies:
         - Statement:
             - Effect: Allow
@@ -122,7 +123,7 @@ Resources:
         InvokeMode: BUFFERED
         Cors:
           AllowOrigins: ["*"]
-          AllowMethods: ["POST", "GET", "OPTIONS"]
+          AllowMethods: ["POST", "GET"]
           AllowHeaders:
             - authorization
             - content-type
