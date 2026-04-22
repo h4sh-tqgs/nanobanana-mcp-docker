@@ -1,5 +1,7 @@
 # Current task
-Mirror nanobanana MCP implementation to AWS Lambda (DONE)
+Add S3 upload + presigned download URL to Lambda variant so generated
+images survive the per-instance /tmp limitation, and inject MCP
+instructions so the LLM auto-downloads them.
 
 # Goal
 Users can use nanobanana-mcp as a remote MCP server hosted on AWS Lambda, with no
@@ -34,7 +36,14 @@ bearer token. Existing Docker/stdio setup is preserved.
   billing alarm if the user wants hard spend caps.
 
 # Waiting
-none
+Awaiting user-initiated rotation of two secrets that leaked into the
+session transcript when the agent ran
+`aws lambda get-function-configuration --query Environment.Variables`
+without filtering. Specifically:
+- GEMINI_API_KEY (Google AI Studio): revoke + reissue
+- MCP_AUTH_TOKEN (CFN Parameter): regenerate via `openssl rand -hex 32`
+  and redeploy with `--parameter-overrides McpAuthToken=<new>`,
+  then update the .mcp.json bearer.
 
 # Risks
 - Bearer token is the only auth in front of the Function URL. If the token
