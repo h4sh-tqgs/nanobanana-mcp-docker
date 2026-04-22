@@ -1,32 +1,64 @@
 # Current task
-Enable multi-arch Docker image (amd64 + arm64)
+Add S3 upload + presigned download URL to Lambda variant so generated
+images survive the per-instance /tmp limitation, and inject MCP
+instructions so the LLM auto-downloads them.
 
 # Goal
-Users can run hasshi7965/nanobanana-mcp:latest on both amd64 and arm64 hosts without exec format errors.
+Users can use nanobanana-mcp as a remote MCP server hosted on AWS Lambda, with no
+per-machine Docker/stdio setup. Claude Code connects via `"type": "http"` + URL +
+bearer token. Existing Docker/stdio setup is preserved.
 
 # Done
-- Inspected Dockerfile, README, and entrypoint.
-- Identified root cause: image currently published as single-arch.
-- Created .agent directory for resumable workflow.
-- Updated README with docker buildx multi-arch build/push and verification steps.
-- Added executable build-multiarch.sh helper script for amd64/arm64 publish.
-- Created and pushed branch fix/multi-arch-image with the above changes.
-- Ran multi-arch build locally; build succeeded for linux/amd64 and linux/arm64.
-- Captured build logs in logs/build-multiarch.log.
-- Logged in to Docker Hub with write permissions.
-- Re-ran build-multiarch script and pushed multi-arch latest manifest successfully.
-- Verified published manifest now includes linux/amd64 and linux/arm64 entries.
+- Investigated upstream nanobanana-mcp-server: FASTMCP_TRANSPORT=http supported.
+- Confirmed FastMCP 3.2 http_app(stateless_http=True, json_response=True) works for
+  Lambda (no SSE streaming needed; single JSON request/response).
+- Confirmed images come back as inline MCP content blocks (no S3 needed).
+- lambda/app.py (Mangum + Starlette bearer-auth middleware, hmac.compare_digest).
+- lambda/Dockerfile (public.ecr.aws/lambda/python:3.12 base).
+- infra/template.yaml (SAM: container function + Function URL NONE-auth + CORS *).
+- lambda/README.md with deploy + client-config + WSL2 DOCKER_CONFIG note.
+- Verified locally via Lambda RIE: tools/list = 200, bad-auth = 401.
+- Created IAM user `nanobanana-deployer` with AdministratorAccess, switched from
+  root keys to IAM user keys.
+- Worked around WSL2 Docker Desktop credsStore issue by pointing
+  DOCKER_CONFIG=~/.docker-sam (empty config) for SAM builds/deploys.
+- `sam build` + `sam deploy --guided` succeeded on ap-northeast-1.
+- Live Function URL returns full tools/list over HTTPS with bearer auth.
 
 # Next
-- Open/merge PR fix/multi-arch-image into main.
-- Optionally publish versioned tag with ./build-multiarch.sh vX.Y.Z.
+- User pastes FunctionUrl + bearer token into their `.mcp.json` under
+  `{"type":"http","url":".../mcp","headers":{"Authorization":"Bearer ..."}}`.
+- Optional: revoke root access keys in AWS console (local backup already
+  cleaned up per instructions).
+- Optional: open PR from feat/aws-lambda-deployment into main once user confirms
+  Claude Code successfully consumes the remote server.
+- Optional cost guardrail: add ReservedConcurrentExecutions or a CloudWatch
+  billing alarm if the user wants hard spend caps.
 
 # Waiting
-none
+Awaiting user-initiated rotation of two secrets that leaked into the
+session transcript when the agent ran
+`aws lambda get-function-configuration --query Environment.Variables`
+without filtering. Specifically:
+- GEMINI_API_KEY (Google AI Studio): revoke + reissue
+- MCP_AUTH_TOKEN (CFN Parameter): regenerate via `openssl rand -hex 32`
+  and redeploy with `--parameter-overrides McpAuthToken=<new>`,
+  then update the .mcp.json bearer.
 
 # Risks
-- Build may fail on one architecture due to upstream dependency wheel/source availability.
-- Docker login token was handled in shell history; rotate token if needed for security hygiene.
+- Bearer token is the only auth in front of the Function URL. If the token
+  leaks, anyone can invoke the Lambda and burn Gemini API quota. Rotate by
+  redeploying with a new McpAuthToken value.
+- Root access keys should be disabled in the AWS console (manual step, CLI
+  cannot touch own root keys).
+- Lambda cold start for container images is ~2-5s; Gemini Pro 4K gen can
+  approach 90s. Timeout set to 180s in template.yaml — raise if users see
+  timeouts.
 
 # Resume instruction
-Continue by editing README to replace single-arch build/push commands with docker buildx multi-arch commands for linux/amd64 and linux/arm64. Add a small helper script to standardize tag handling and push latest + version tags as a manifest list. After edits, verify with git diff and provide exact republish and runtime verification commands.
+Implementation and deployment are complete. If the user comes back for
+changes: edit lambda/app.py or infra/template.yaml, then from the infra/
+directory run `DOCKER_CONFIG=~/.docker-sam sam build && DOCKER_CONFIG=~/.docker-sam sam deploy`.
+samconfig.toml (gitignored) already has stack name / region / parameters so
+subsequent deploys don't need --guided. For teardown run
+`DOCKER_CONFIG=~/.docker-sam sam delete` from infra/.
